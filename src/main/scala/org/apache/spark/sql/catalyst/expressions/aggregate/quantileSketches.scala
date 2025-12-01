@@ -180,6 +180,17 @@ trait BasePercentileEstimation extends ImplicitCastInputTypes {
   override def checkInputDataTypes(): TypeCheckResult = {
     // Validate the inputTypes
     val defaultCheck = super.checkInputDataTypes()
+    var hasOutOfRangePercentage = false
+    if (defaultCheck.isSuccess && percentages != null) {
+      var i = 0
+      while (i < percentages.length && !hasOutOfRangePercentage) {
+        val p = percentages(i)
+        if (p < 0.0 || p > 1.0) {
+          hasOutOfRangePercentage = true
+        }
+        i += 1
+      }
+    }
     if (defaultCheck.isFailure) {
       defaultCheck
     } else if (!percentageExpression.foldable) {
@@ -188,7 +199,7 @@ trait BasePercentileEstimation extends ImplicitCastInputTypes {
         s"but got $percentageExpression")
     } else if (percentages == null) {
       TypeCheckFailure("Percentage value must not be null")
-    } else if (percentages.exists(percentage => percentage < 0.0 || percentage > 1.0)) {
+    } else if (hasOutOfRangePercentage) {
       // percentages(s) must be in the range [0.0, 1.0]
       TypeCheckFailure("Percentage(s) must be between 0.0 and 1.0, " +
         s"but got $percentageExpression")
