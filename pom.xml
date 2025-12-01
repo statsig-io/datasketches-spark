@@ -39,11 +39,11 @@
     <maven.compiler.source>${java.version}</maven.compiler.source>
     <maven.compiler.target>${java.version}</maven.compiler.target>
     <maven.version>3.6.3</maven.version>
-    <scala.version>2.12.15</scala.version>
+    <scala.version>2.12.18</scala.version>
     <scala.binary.version>2.12</scala.binary.version>
     <datasketches.version>2.0.0</datasketches.version>
-    <spark.version>3.2.0</spark.version>
-    <spark.binary.version>3.2</spark.binary.version>
+    <spark.version>3.5.3</spark.version>
+    <spark.binary.version>3.5</spark.binary.version>
     <hadoop.version>3.2.0</hadoop.version>
     <hadoop.binary.version>3.2</hadoop.binary.version>
     <scalatest.version>3.2.3</scalatest.version>
@@ -184,7 +184,8 @@
       <plugin>
         <groupId>net.alchim31.maven</groupId>
         <artifactId>scala-maven-plugin</artifactId>
-        <version>3.2.2</version>
+        <!-- Newer plugin avoids NPEs seen with recent Maven/Java versions -->
+        <version>4.8.1</version>
         <executions>
           <execution>
             <id>eclipse-add-source</id>
@@ -442,6 +443,16 @@
               <outputDirectory>${project.parent.build.directory}</outputDirectory>
               <minimizeJar>false</minimizeJar>
               <createDependencyReducedPom>false</createDependencyReducedPom>
+              <relocations>
+                <relocation>
+                  <pattern>org.apache.datasketches</pattern>
+                  <shadedPattern>com.statsig.shaded.datasketches</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>org.apache.datasketches.memory</pattern>
+                  <shadedPattern>com.statsig.shaded.datasketches.memory</shadedPattern>
+                </relocation>
+              </relocations>
               <artifactSet>
                 <includes></includes>
               </artifactSet>
@@ -452,4 +463,3 @@
     </plugins>
   </build>
 </project>
-

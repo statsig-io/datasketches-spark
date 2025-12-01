@@ -49,6 +49,19 @@ class ApproximateQuerySuite extends QueryTest with SharedSparkSession with SQLTe
     }
   }
 
+  test("approx_rank_ex basic tests") {
+    Seq("KLL", "REQ").foreach { impl =>
+      withSQLConf(DataSketchConf.QUANTILE_SKETCH_IMPL.key -> impl) {
+        val df = spark.sql(
+          s"""
+             |SELECT approx_rank_ex(c, 1.0), approx_rank_ex(c, 4.0)
+             |  FROM VALUES (1.0), (2.0), (3.0), (4.0) AS t(c);
+           """.stripMargin)
+        checkAnswer(df, Row(0.25, 1.0))
+      }
+    }
+  }
+
   test("approx_percentile_ex should keep an input type in output") {
     val testTypes = Seq(("TINYINT", ByteType), ("INT", IntegerType), ("LONG", LongType),
       ("FLOAT", FloatType), ("DOUBLE", DoubleType), ("DECIMAL(10, 0)", DecimalType.IntDecimal))
@@ -174,6 +187,34 @@ class ApproximateQuerySuite extends QueryTest with SharedSparkSession with SQLTe
            """.stripMargin)
       }.getMessage()
       assert(errMsg3.contains("Percentage(s) must be between 0.0 and 1.0"))
+    }
+  }
+
+  test("approx_rank_estimate basic tests") {
+    import org.apache.spark.sql.functions._
+    import testImplicits._
+
+    withTempView("t") {
+      spark.sql(
+        s"""
+           |CREATE TEMPORARY VIEW t AS SELECT * FROM VALUES
+           |  (1.0),
+           |  (2.0),
+           |  (3.0),
+           |  (4.0)
+           |AS t(v);
+         """.stripMargin)
+
+      val summaries = spark.table("t")
+        .agg(expr("approx_percentile_accumulate(v) AS summaries"))
+
+      val merged = summaries.selectExpr("approx_percentile_combine(summaries) AS merged")
+
+      val df1 = merged.selectExpr("approx_rank_estimate(merged, 1.0)")
+      val df2 = merged.selectExpr("approx_rank_estimate(merged, 4.0)")
+
+      checkAnswer(df1, Row(0.25))
+      checkAnswer(df2, Row(1.0))
     }
   }
 
