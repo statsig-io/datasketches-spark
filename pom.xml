@@ -41,7 +41,7 @@
     <maven.version>3.6.3</maven.version>
     <scala.version>2.12.18</scala.version>
     <scala.binary.version>2.12</scala.binary.version>
-    <datasketches.version>2.0.0</datasketches.version>
+    <datasketches.version>3.3.0</datasketches.version>
     <spark.version>3.5.3</spark.version>
     <spark.binary.version>3.5</spark.binary.version>
     <hadoop.version>3.2.0</hadoop.version>
@@ -430,7 +430,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-shade-plugin</artifactId>
-        <version>2.3</version>
+        <version>3.4.1</version>
           <executions>
             <execution>
             <id>jar-with-dependencies</id>

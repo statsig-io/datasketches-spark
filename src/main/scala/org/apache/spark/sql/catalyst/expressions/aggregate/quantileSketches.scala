@@ -50,7 +50,7 @@ object QuantileSketch {
   def apply(name: String): BaseQuantileSketchImpl = name.toUpperCase(Locale.ROOT) match {
     case tpe if tpe == KLL.toString =>
       val k = SQLConf.get.quantileSketchKInKll
-      val impl = new jKllFloatsSketch(k)
+      val impl = jKllFloatsSketch.newHeapInstance(k)
       new KllFloatsSketchImpl(impl)
     case tpe if tpe == REQ.toString =>
       val k = SQLConf.get.quantileSketchKInReq
