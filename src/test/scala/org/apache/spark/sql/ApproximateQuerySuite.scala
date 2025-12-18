@@ -190,6 +190,31 @@ class ApproximateQuerySuite extends QueryTest with SharedSparkSession with SQLTe
     }
   }
 
+  test("approx_percentile_merge merges two sketches") {
+    Seq("KLL", "REQ", "MERGEABLE").foreach { impl =>
+      withSQLConf(DataSketchConf.QUANTILE_SKETCH_IMPL.key -> impl) {
+        val s1 = spark.sql(
+          """
+            |SELECT approx_percentile_accumulate(v) AS s1
+            |  FROM VALUES (1.0), (2.0) AS t(v);
+          """.stripMargin)
+
+        val s2 = spark.sql(
+          """
+            |SELECT approx_percentile_accumulate(v) AS s2
+            |  FROM VALUES (3.0), (4.0) AS t(v);
+          """.stripMargin)
+
+        val merged = s1.crossJoin(s2).selectExpr("approx_percentile_merge(s1, s2) AS merged")
+        val df = merged.selectExpr(
+          "merged.n AS n",
+          "merged.numRetained AS numRetained",
+          "approx_percentile_estimate(merged.sketch, 0.5) AS median")
+        checkAnswer(df, Row(4L, 4, 2.5))
+      }
+    }
+  }
+
   test("approx_rank_estimate basic tests") {
     import org.apache.spark.sql.functions._
     import testImplicits._

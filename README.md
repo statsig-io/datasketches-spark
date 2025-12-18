@@ -93,6 +93,18 @@ scala> df.where("Date between '2007-06-01' and '2010-01-01'").selectExpr("percen
 |      3.25|
 +----------+
 
+# Merge two sketch states directly (returns struct<sketch, n, numRetained>)
+>>> s1 = spark.sql("SELECT approx_percentile_accumulate(v) AS s1 FROM VALUES (1.0), (2.0) AS t(v)")
+>>> s2 = spark.sql("SELECT approx_percentile_accumulate(v) AS s2 FROM VALUES (3.0), (4.0) AS t(v)")
+>>> merged = s1.crossJoin(s2).selectExpr("approx_percentile_merge(s1, s2) AS merged")
+>>> merged.selectExpr("merged.n AS n", "merged.numRetained AS numRetained",
+...                   "approx_percentile_estimate(merged.sketch, 0.5) AS percentile").show()
++---+-----------+----------+
+|  n|numRetained|percentile|
++---+-----------+----------+
+|  4|          4|       2.5|
++---+-----------+----------+
+
 # Estimate rank directly from data
 >>> df.selectExpr("approx_rank_ex(Global_active_power, 3.0) AS rank").show()
 +----+
