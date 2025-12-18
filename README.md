@@ -93,6 +93,22 @@ scala> df.where("Date between '2007-06-01' and '2010-01-01'").selectExpr("percen
 |      3.25|
 +----------+
 
+# Estimate rank directly from data
+>>> df.selectExpr("approx_rank_ex(Global_active_power, 3.0) AS rank").show()
++----+
+|rank|
++----+
+| 0.8|
++----+
+
+# Estimate rank (CDF) for a value from a merged sketch
+>>> df.selectExpr("approx_rank_estimate(merged, 3.0) AS rank").show()
++----+
+|rank|
++----+
+| 0.8|
++----+
+
 >>> df.selectExpr("approx_pmf_estimate(merged, 4) pmf").show(1, False)
 +--------------------------------------------------------------------------------------+
 |pmf                                                                                   |
@@ -318,4 +334,3 @@ you can use similar functions to the other two sketch ones:
 
 If you hit some bugs and have requests, please leave some comments on [Issues](https://github.com/maropu/datasketches-spark/issues)
 or Twitter ([@maropu](http://twitter.com/#!/maropu)).
-

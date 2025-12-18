@@ -50,7 +50,7 @@ object QuantileSketch {
   def apply(name: String): BaseQuantileSketchImpl = name.toUpperCase(Locale.ROOT) match {
     case tpe if tpe == KLL.toString =>
       val k = SQLConf.get.quantileSketchKInKll
-      val impl = new jKllFloatsSketch(k)
+      val impl = jKllFloatsSketch.newHeapInstance(k)
       new KllFloatsSketchImpl(impl)
     case tpe if tpe == REQ.toString =>
       val k = SQLConf.get.quantileSketchKInReq
@@ -86,6 +86,7 @@ trait BaseQuantileSketchImpl {
   def merge(other: BaseQuantileSketchImpl): Unit
   def getQuantiles(fractions: Array[Double]): Array[Double]
   def getPMF(numSplits: Int): Array[Double]
+  def getRank(v: Double): Double
   def serializeTo(): Array[Byte]
 }
 
@@ -102,6 +103,7 @@ class KllFloatsSketchImpl(_impl: jKllFloatsSketch) extends BaseQuantileSketchImp
     val splitPoints = (1 until numSplits).map(_ * splitSize).toArray
     _impl.getPMF(splitPoints)
   }
+  override def getRank(v: Double): Double = _impl.getRank(v.toFloat)
   override def serializeTo(): Array[Byte] = _impl.toByteArray
 }
 
@@ -118,6 +120,7 @@ class ReqSketchImpl(_impl: jReqSketch) extends BaseQuantileSketchImpl {
     val splitPoints = (1 until numSplits).map(_ * splitSize).toArray
     _impl.getPMF(splitPoints)
   }
+  override def getRank(v: Double): Double = _impl.getRank(v.toFloat)
   override def serializeTo(): Array[Byte] = _impl.toByteArray
 }
 
@@ -138,6 +141,7 @@ class MergeableSketchImpl(var _impl: UpdateDoublesSketch) extends BaseQuantileSk
     val splitPoints = (1 until numSplits).map(_ * splitSize).toArray
     _impl.getPMF(splitPoints)
   }
+  override def getRank(v: Double): Double = _impl.getRank(v)
   override def serializeTo(): Array[Byte] = _impl.toByteArray
 }
 
@@ -176,6 +180,17 @@ trait BasePercentileEstimation extends ImplicitCastInputTypes {
   override def checkInputDataTypes(): TypeCheckResult = {
     // Validate the inputTypes
     val defaultCheck = super.checkInputDataTypes()
+    var hasOutOfRangePercentage = false
+    if (defaultCheck.isSuccess && percentages != null) {
+      var i = 0
+      while (i < percentages.length && !hasOutOfRangePercentage) {
+        val p = percentages(i)
+        if (p < 0.0 || p > 1.0) {
+          hasOutOfRangePercentage = true
+        }
+        i += 1
+      }
+    }
     if (defaultCheck.isFailure) {
       defaultCheck
     } else if (!percentageExpression.foldable) {
@@ -184,7 +199,7 @@ trait BasePercentileEstimation extends ImplicitCastInputTypes {
         s"but got $percentageExpression")
     } else if (percentages == null) {
       TypeCheckFailure("Percentage value must not be null")
-    } else if (percentages.exists(percentage => percentage < 0.0 || percentage > 1.0)) {
+    } else if (hasOutOfRangePercentage) {
       // percentages(s) must be in the range [0.0, 1.0]
       TypeCheckFailure("Percentage(s) must be between 0.0 and 1.0, " +
         s"but got $percentageExpression")
@@ -236,6 +251,17 @@ trait BaseQuantileSketchAggregate extends TypedImperativeAggregate[BaseQuantileS
   def implName: String
   def child: Expression
 
+  private def toFloatValue(v: AnyRef): Float = child.dataType match {
+    case ByteType => v.asInstanceOf[Byte].toFloat
+    case ShortType => v.asInstanceOf[Short].toFloat
+    case IntegerType => v.asInstanceOf[Int].toFloat
+    case LongType => v.asInstanceOf[Long].toFloat
+    case FloatType => v.asInstanceOf[Float]
+    case DoubleType => v.asInstanceOf[Double].toFloat
+    case d: DecimalType => v.asInstanceOf[Decimal].toFloat
+    case t => throw new IllegalStateException(s"Unexpected data type ${t.catalogString}")
+  }
+
   override def createAggregationBuffer(): BaseQuantileSketchImpl = {
     QuantileSketch(implName)
   }
@@ -247,12 +273,7 @@ trait BaseQuantileSketchAggregate extends TypedImperativeAggregate[BaseQuantileS
     val value = child.eval(input).asInstanceOf[AnyRef]
     // Ignore empty rows, for example: percentile_approx(null)
     if (value != null) {
-      // Convert the value to a float value
-      val floatValue = child.dataType match {
-        case n: NumericType => n.numeric.toFloat(value.asInstanceOf[n.InternalType])
-        case t => throw new IllegalStateException(s"Unexpected data type ${t.catalogString}")
-      }
-      buffer.update(floatValue)
+      buffer.update(toFloatValue(value))
     }
     buffer
   }
@@ -639,6 +660,177 @@ case class QuantileFromSketchState(
          |Object $percentile = $pf.apply($ar);
          |if ($percentile != null) {
          |  ${ev.value} = $castCode;
+         |} else {
+         |  ${ev.isNull} = true;
+         |}
+       """.stripMargin
+    })
+  }
+
+  override protected def withNewChildrenInternal(
+      newLeft: Expression, newRight: Expression): Expression = {
+    copy(newLeft, newRight)
+  }
+}
+
+@ExpressionDescription(
+  usage = """
+    _FUNC_(col, value) - Returns the approximate rank in [0.0, 1.0] of `value` within the numeric
+      column `col`. The second parameter must be a constant numeric literal. The internal sketch
+      algorithm can be configured via `spark.sql.dataSketches.quantiles.defaultImpl`.
+  """,
+  examples = """
+    Examples:
+      > SELECT _FUNC_(col, 1) FROM VALUES (1), (2), (3), (4) AS t(col);
+       0.25
+      > SELECT _FUNC_(col, 4) FROM VALUES (1), (2), (3), (4) AS t(col);
+       1.0
+  """,
+  group = "agg_funcs",
+  since = "3.1.2")
+case class RankFromData(
+    child: Expression,
+    valueExpression: Expression,
+    mutableAggBufferOffset: Int = 0,
+    inputAggBufferOffset: Int = 0,
+    implName: String = SQLConf.get.quantileSketchImpl)
+  extends BaseQuantileSketchAggregate with ImplicitCastInputTypes {
+
+  def this(child: Expression, valueExpression: Expression) = {
+    this(child, valueExpression, 0, 0)
+  }
+
+  override def prettyName: String = "approx_rank_ex"
+
+  override def children: Seq[Expression] = child :: valueExpression :: Nil
+
+  override def withNewMutableAggBufferOffset(newMutableAggBufferOffset: Int): RankFromData =
+    copy(mutableAggBufferOffset = newMutableAggBufferOffset)
+  override def withNewInputAggBufferOffset(newInputAggBufferOffset: Int): RankFromData =
+    copy(inputAggBufferOffset = newInputAggBufferOffset)
+
+  override lazy val dataType: DataType = DoubleType
+
+  override def inputTypes: Seq[AbstractDataType] = Seq(NumericType, NumericType)
+
+  // Returns null for empty inputs
+  override def nullable: Boolean = true
+
+  @transient
+  private lazy val rankValue: java.lang.Double = valueExpression.eval() match {
+    case null => null
+    case v: java.lang.Byte => v.doubleValue()
+    case v: java.lang.Short => v.doubleValue()
+    case v: java.lang.Integer => v.doubleValue()
+    case v: java.lang.Long => v.doubleValue()
+    case v: java.lang.Float => v.doubleValue()
+    case v: java.lang.Double => v
+    case v: Decimal => v.toDouble
+    case other =>
+      throw new IllegalStateException(
+        s"Unexpected data type ${valueExpression.dataType.catalogString} for rank value: $other")
+  }
+
+  override def checkInputDataTypes(): TypeCheckResult = {
+    val defaultCheck = super.checkInputDataTypes()
+    if (defaultCheck.isFailure) {
+      defaultCheck
+    } else if (!valueExpression.foldable) {
+      TypeCheckFailure("The rank value must be a constant literal, " +
+        s"but got $valueExpression")
+    } else if (rankValue == null) {
+      TypeCheckFailure("Rank value must not be null")
+    } else {
+      TypeCheckSuccess
+    }
+  }
+
+  override def eval(buffer: BaseQuantileSketchImpl): Any = {
+    if (!buffer.isEmpty) {
+      buffer.getRank(rankValue)
+    } else {
+      null
+    }
+  }
+
+  override protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]): Expression =
+    super.legacyWithNewChildren(newChildren)
+}
+
+@ExpressionDescription(
+  usage = """
+    _FUNC_(col, value) - Computes an approximate rank in [0.0, 1.0] for the given `value`
+      from an input quantile sketch state. The input state should be the one that the
+      percentile sketch algorithm specified by `spark.sql.dataSketches.quantiles.defaultImpl`
+      generates.
+  """,
+  since = "3.1.2")
+case class RankFromSketchState(
+    child: Expression,
+    valueExpression: Expression,
+    implName: String)
+  extends BinaryExpression with ImplicitCastInputTypes with NullIntolerant with Logging {
+
+  def this(child: Expression, valueExpression: Expression) = {
+    this(child, valueExpression, SQLConf.get.quantileSketchImpl)
+  }
+
+  override def prettyName: String = "approx_rank_estimate"
+  override def left: Expression = child
+  override def right: Expression = valueExpression
+
+  override val dataType: DataType = DoubleType
+
+  override def inputTypes: Seq[AbstractDataType] = Seq(BinaryType, NumericType)
+
+  // Returns null for empty inputs
+  override def nullable: Boolean = true
+
+  @transient
+  private lazy val toDouble: Any => Double = valueExpression.dataType match {
+    case ByteType => (v: Any) => v.asInstanceOf[Byte].toDouble
+    case ShortType => (v: Any) => v.asInstanceOf[Short].toDouble
+    case IntegerType => (v: Any) => v.asInstanceOf[Int].toDouble
+    case LongType => (v: Any) => v.asInstanceOf[Long].toDouble
+    case FloatType => (v: Any) => v.asInstanceOf[Float].toDouble
+    case DoubleType => (v: Any) => v.asInstanceOf[Double]
+    case d: DecimalType => (v: Any) => v.asInstanceOf[Decimal].toDouble
+    case t =>
+      (_: Any) => throw new IllegalStateException(
+        s"Unexpected data type ${t.catalogString} for rank value")
+  }
+
+  protected def getRank(buffer: BaseQuantileSketchImpl, v: Double): Any = {
+    if (!buffer.isEmpty) {
+      buffer.getRank(v)
+    } else {
+      null
+    }
+  }
+
+  @transient private[this] lazy val getOutputRank = {
+    (ar: Any, v: Any) => try {
+      val sketch = QuantileSketch(implName, ar.asInstanceOf[Array[Byte]])
+      getRank(sketch, toDouble(v))
+    } catch {
+      case NonFatal(_) =>
+        logWarning("Illegal input bytes found, so cannot update " +
+          s"an immediate $implName sketch data.")
+        null
+    }
+  }
+
+  override def nullSafeEval(ar: Any, v: Any): Any = getOutputRank(ar, v)
+
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    val rf = ctx.addReferenceObj("getRank", getOutputRank,
+      classOf[(Any, Any) => Any].getCanonicalName)
+    val rank = ctx.freshName("rank")
+    nullSafeCodeGen(ctx, ev, (ar, v) => {
+      s"""
+         |Object $rank = $rf.apply($ar, $v);
+         |if ($rank != null) {
+         |  ${ev.value} = ((Double) $rank).doubleValue();
          |} else {
          |  ${ev.isNull} = true;
          |}
