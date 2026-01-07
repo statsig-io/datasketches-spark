@@ -569,14 +569,18 @@ case class CombineQuantileSketches(
   override def update(
       buffer: BaseQuantileSketchImpl,
       input: InternalRow): BaseQuantileSketchImpl = {
-    try {
-      val bytes = child.eval(input).asInstanceOf[Array[Byte]]
-      buffer.merge(QuantileSketch(implName, bytes))
-    } catch {
-      case e @ NonFatal(_) =>
-        logWarning("Illegal input bytes found, so cannot update " +
-          s"an immediate $implName sketch data.")
-        throw e
+    val value = child.eval(input)
+    // Ignore empty rows (e.g. when the input sketch column is null)
+    if (value != null) {
+      try {
+        val bytes = value.asInstanceOf[Array[Byte]]
+        buffer.merge(QuantileSketch(implName, bytes))
+      } catch {
+        case e @ NonFatal(_) =>
+          logWarning("Illegal input bytes found, so cannot update " +
+            s"an immediate $implName sketch data.")
+          throw e
+      }
     }
     buffer
   }

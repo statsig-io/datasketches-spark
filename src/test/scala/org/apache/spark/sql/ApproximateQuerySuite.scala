@@ -159,6 +159,21 @@ class ApproximateQuerySuite extends QueryTest with SharedSparkSession with SQLTe
     }
   }
 
+  test("approx_percentile_combine ignores null sketches") {
+    val df = spark.sql(
+      """
+        |WITH sketches AS (
+        |  SELECT approx_percentile_accumulate(v) AS s FROM VALUES (1.0), (2.0) AS t(v)
+        |  UNION ALL
+        |  SELECT null
+        |)
+        |SELECT approx_percentile_estimate(approx_percentile_combine(s), 1.0) AS p
+        |FROM sketches
+      """.stripMargin)
+
+    checkAnswer(df, Row(2.0))
+  }
+
   test("approx_percentile_estimate - error handling") {
     val errMsg1 = intercept[AnalysisException] {
       spark.sql(
