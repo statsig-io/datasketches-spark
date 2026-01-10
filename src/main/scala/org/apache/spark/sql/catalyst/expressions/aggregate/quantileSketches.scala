@@ -34,6 +34,7 @@ import org.apache.spark.sql.catalyst.analysis.TypeCheckResult.{TypeCheckFailure,
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodeGenerator._
+import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.catalyst.util.{ArrayData, GenericArrayData}
 import org.apache.spark.sql.internal.DataSketchConf._
 import org.apache.spark.sql.internal.SQLConf
@@ -84,6 +85,8 @@ trait BaseQuantileSketchImpl {
   def isEmpty: Boolean
   def update(v: Float): Unit
   def merge(other: BaseQuantileSketchImpl): Unit
+  def getN: Long
+  def getNumRetained: Int
   def getQuantiles(fractions: Array[Double]): Array[Double]
   def getPMF(numSplits: Int): Array[Double]
   def getRank(v: Double): Double
@@ -96,6 +99,8 @@ class KllFloatsSketchImpl(_impl: jKllFloatsSketch) extends BaseQuantileSketchImp
   override def update(v: Float): Unit = _impl.update(v)
   override def merge(other: BaseQuantileSketchImpl): Unit =
     _impl.merge(other.impl.asInstanceOf[jKllFloatsSketch])
+  override def getN: Long = _impl.getN
+  override def getNumRetained: Int = _impl.getNumRetained
   override def getQuantiles(fractions: Array[Double]): Array[Double] =
     _impl.getQuantiles(fractions).map(_.toDouble)
   override def getPMF(numSplits: Int): Array[Double] = {
@@ -113,6 +118,8 @@ class ReqSketchImpl(_impl: jReqSketch) extends BaseQuantileSketchImpl {
   override def update(v: Float): Unit = _impl.update(v)
   override def merge(other: BaseQuantileSketchImpl): Unit =
     _impl.merge(other.impl.asInstanceOf[jReqSketch])
+  override def getN: Long = _impl.getN
+  override def getNumRetained: Int = _impl.getRetainedItems
   override def getQuantiles(fractions: Array[Double]): Array[Double] =
     _impl.getQuantiles(fractions).map(_.toDouble)
   override def getPMF(numSplits: Int): Array[Double] = {
@@ -141,6 +148,8 @@ class MergeableSketchImpl(var _impl: UpdateDoublesSketch) extends BaseQuantileSk
     val splitPoints = (1 until numSplits).map(_ * splitSize).toArray
     _impl.getPMF(splitPoints)
   }
+  override def getN: Long = _impl.getN
+  override def getNumRetained: Int = _impl.getRetainedItems
   override def getRank(v: Double): Double = _impl.getRank(v)
   override def serializeTo(): Array[Byte] = _impl.toByteArray
 }
@@ -560,14 +569,18 @@ case class CombineQuantileSketches(
   override def update(
       buffer: BaseQuantileSketchImpl,
       input: InternalRow): BaseQuantileSketchImpl = {
-    try {
-      val bytes = child.eval(input).asInstanceOf[Array[Byte]]
-      buffer.merge(QuantileSketch(implName, bytes))
-    } catch {
-      case e @ NonFatal(_) =>
-        logWarning("Illegal input bytes found, so cannot update " +
-          s"an immediate $implName sketch data.")
-        throw e
+    val value = child.eval(input)
+    // Ignore empty rows (e.g. when the input sketch column is null)
+    if (value != null) {
+      try {
+        val bytes = value.asInstanceOf[Array[Byte]]
+        buffer.merge(QuantileSketch(implName, bytes))
+      } catch {
+        case e @ NonFatal(_) =>
+          logWarning("Illegal input bytes found, so cannot update " +
+            s"an immediate $implName sketch data.")
+          throw e
+      }
     }
     buffer
   }
@@ -592,6 +605,77 @@ case class CombineQuantileSketches(
 
   override protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]): Expression =
     super.legacyWithNewChildren(newChildren)
+}
+
+@ExpressionDescription(
+  usage = """
+    _FUNC_(left, right) - Merges two percentile sketch states into a single sketch state and
+      returns a struct containing the merged state alongside metadata:
+      `struct<sketch: binary, n: bigint, numRetained: int>`.
+      Each state should be the one that the percentile sketch algorithm specified by
+      `spark.sql.dataSketches.quantiles.defaultImpl` generates.
+  """,
+  group = "agg_funcs",
+  since = "3.1.2")
+case class MergeQuantileSketches(
+    left: Expression,
+    right: Expression,
+    implName: String)
+  extends BinaryExpression with ImplicitCastInputTypes with NullIntolerant with Logging {
+
+  def this(left: Expression, right: Expression) = {
+    this(left, right, SQLConf.get.quantileSketchImpl)
+  }
+
+  override def prettyName: String = "approx_percentile_merge"
+
+  override def inputTypes: Seq[AbstractDataType] = Seq(BinaryType, BinaryType)
+
+  override lazy val dataType: DataType = StructType(Seq(
+    StructField("sketch", BinaryType, nullable = false),
+    StructField("n", LongType, nullable = false),
+    StructField("numRetained", IntegerType, nullable = false)))
+
+  // Returns null for empty inputs or invalid bytes
+  override def nullable: Boolean = true
+
+  @transient private[this] lazy val mergeSketches = (l: Any, r: Any) => try {
+    val merged = QuantileSketch(implName)
+    merged.merge(QuantileSketch(implName, l.asInstanceOf[Array[Byte]]))
+    merged.merge(QuantileSketch(implName, r.asInstanceOf[Array[Byte]]))
+    new GenericInternalRow(Array[Any](
+      merged.serializeTo(),
+      merged.getN,
+      merged.getNumRetained))
+  } catch {
+    case NonFatal(_) =>
+      logWarning("Illegal input bytes found, so cannot merge " +
+        s"an immediate $implName sketch data.")
+      null
+  }
+
+  override def nullSafeEval(leftAr: Any, rightAr: Any): Any = mergeSketches(leftAr, rightAr)
+
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    val mf = ctx.addReferenceObj("mergeSketches", mergeSketches,
+      classOf[(Any, Any) => Any].getCanonicalName)
+    val merged = ctx.freshName("merged")
+    nullSafeCodeGen(ctx, ev, (l, r) => {
+      s"""
+         |Object $merged = $mf.apply($l, $r);
+         |if ($merged != null) {
+         |  ${ev.value} = (org.apache.spark.sql.catalyst.InternalRow) $merged;
+         |} else {
+         |  ${ev.isNull} = true;
+         |}
+       """.stripMargin
+    })
+  }
+
+  override protected def withNewChildrenInternal(
+      newLeft: Expression, newRight: Expression): Expression = {
+    copy(newLeft, newRight)
+  }
 }
 
 @ExpressionDescription(
