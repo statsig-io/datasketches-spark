@@ -105,6 +105,14 @@ scala> df.where("Date between '2007-06-01' and '2010-01-01'").selectExpr("percen
 |  4|          4|       2.5|
 +---+-----------+----------+
 
+# Inspect the number of items stored in a sketch (N)
+>>> merged.selectExpr("approx_percentile_sketch_n(merged.sketch) AS n").show()
++---+
+|  n|
++---+
+|  4|
++---+
+
 # Estimate rank directly from data
 >>> df.selectExpr("approx_rank_ex(Global_active_power, 3.0) AS rank").show()
 +----+
