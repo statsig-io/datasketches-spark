@@ -158,16 +158,43 @@ trait BasePercentileEstimation extends ImplicitCastInputTypes {
   self: Expression =>
 
   def percentageExpression: Expression
+  protected def allowNonFoldablePercentage: Boolean = false
 
   // Mark as lazy so that percentageExpression is not evaluated during tree transformation.
   @transient
   protected lazy val returnPercentileArray = percentageExpression.dataType.isInstanceOf[ArrayType]
 
   @transient
-  private lazy val percentages = percentageExpression.eval() match {
+  private lazy val literalPercentages: Option[Array[Double]] = {
+    if (percentageExpression.foldable) {
+      Option(percentageExpression.eval()).map(extractPercentages)
+    } else {
+      None
+    }
+  }
+
+  @transient
+  protected lazy val constPercentages: Array[Double] = literalPercentages.orNull
+
+  protected def extractPercentages(input: Any): Array[Double] = input match {
     case null => null
     case num: Double => Array(num)
     case arrayData: ArrayData => arrayData.toDoubleArray()
+  }
+
+  protected def hasOutOfRangePercentage(percentages: Array[Double]): Boolean = {
+    var hasOutOfRange = false
+    if (percentages != null) {
+      var i = 0
+      while (i < percentages.length && !hasOutOfRange) {
+        val p = percentages(i)
+        if (p < 0.0 || p > 1.0) {
+          hasOutOfRange = true
+        }
+        i += 1
+      }
+    }
+    hasOutOfRange
   }
 
   override lazy val dataType: DataType = {
@@ -184,36 +211,26 @@ trait BasePercentileEstimation extends ImplicitCastInputTypes {
   }
 
   // Check the inputTypes are valid, and the percentageExpression satisfies:
-  // 1. percentageExpression must be foldable;
-  // 2. percentages(s) must be in the range [0.0, 1.0].
+  // 1. percentageExpression must be foldable unless allowNonFoldablePercentage is true;
+  // 2. percentages(s) must be in the range [0.0, 1.0] when foldable.
   override def checkInputDataTypes(): TypeCheckResult = {
     // Validate the inputTypes
     val defaultCheck = super.checkInputDataTypes()
-    var hasOutOfRangePercentage = false
-    if (defaultCheck.isSuccess && percentages != null) {
-      var i = 0
-      while (i < percentages.length && !hasOutOfRangePercentage) {
-        val p = percentages(i)
-        if (p < 0.0 || p > 1.0) {
-          hasOutOfRangePercentage = true
-        }
-        i += 1
-      }
-    }
-    if (defaultCheck.isFailure) {
-      defaultCheck
-    } else if (!percentageExpression.foldable) {
-      // percentageExpression must be foldable
-      TypeCheckFailure("The percentage(s) must be a constant literal, " +
-        s"but got $percentageExpression")
-    } else if (percentages == null) {
-      TypeCheckFailure("Percentage value must not be null")
-    } else if (hasOutOfRangePercentage) {
-      // percentages(s) must be in the range [0.0, 1.0]
-      TypeCheckFailure("Percentage(s) must be between 0.0 and 1.0, " +
-        s"but got $percentageExpression")
-    } else {
-      TypeCheckSuccess
+    if (defaultCheck.isFailure) return defaultCheck
+
+    literalPercentages match {
+      case Some(null) =>
+        TypeCheckFailure("Percentage value must not be null")
+      case Some(ps) if hasOutOfRangePercentage(ps) =>
+        TypeCheckFailure("Percentage(s) must be between 0.0 and 1.0, " +
+          s"but got $percentageExpression")
+      case Some(_) =>
+        TypeCheckSuccess
+      case None if allowNonFoldablePercentage =>
+        TypeCheckSuccess
+      case None =>
+        TypeCheckFailure("The percentage(s) must be a constant literal, " +
+          s"but got $percentageExpression")
     }
   }
 
@@ -236,8 +253,10 @@ trait BasePercentileEstimation extends ImplicitCastInputTypes {
 
   private lazy val convertFunc = createOutputConvertFunc()
 
-  protected def getPercentiles(buffer: BaseQuantileSketchImpl): Seq[Any] = {
-    if (!buffer.isEmpty) {
+  protected def getPercentiles(
+      buffer: BaseQuantileSketchImpl,
+      percentages: Array[Double]): Seq[Any] = {
+    if (!buffer.isEmpty && percentages != null && !hasOutOfRangePercentage(percentages)) {
       buffer.getQuantiles(percentages).map(convertFunc).toSeq
     } else {
       Nil
@@ -316,7 +335,7 @@ abstract class BaseQuantileSketch
   override def nullable: Boolean = true
 
   override def eval(buffer: BaseQuantileSketchImpl): Any = {
-    generateOutput(getPercentiles(buffer))
+    generateOutput(getPercentiles(buffer, constPercentages))
   }
 }
 
@@ -717,9 +736,14 @@ case class QuantileFromSketchState(
   override def nullable: Boolean = true
 
   @transient private[this] lazy val getOutputPercentiles = {
-    (ar: Any) => try {
-      val sketch = QuantileSketch(implName, ar.asInstanceOf[Array[Byte]])
-      generateOutput(getPercentiles(sketch))
+    (ar: Any, p: Any) => try {
+      val percentages = extractPercentages(p)
+      if (percentages == null || hasOutOfRangePercentage(percentages)) {
+        null
+      } else {
+        val sketch = QuantileSketch(implName, ar.asInstanceOf[Array[Byte]])
+        generateOutput(getPercentiles(sketch, percentages))
+      }
     } catch {
       case NonFatal(_) =>
         logWarning("Illegal input bytes found, so cannot update " +
@@ -728,20 +752,23 @@ case class QuantileFromSketchState(
     }
   }
 
-  override def nullSafeEval(ar: Any, percentages: Any): Any = getOutputPercentiles(ar)
+  override protected def allowNonFoldablePercentage: Boolean = true
+
+  override def nullSafeEval(ar: Any, percentages: Any): Any =
+    getOutputPercentiles(ar, percentages)
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     val pf = ctx.addReferenceObj("getPercentiles", getOutputPercentiles,
-      classOf[Any => Any].getCanonicalName)
+      classOf[(Any, Any) => Any].getCanonicalName)
     val percentile = ctx.freshName("percentile")
     val castCode = if (!returnPercentileArray) {
       s"((${boxedType(dataType)}) $percentile).${javaType(dataType)}Value()"
     } else {
       s"(${javaType(dataType)}) $percentile"
     }
-    nullSafeCodeGen(ctx, ev, (ar, _) => {
+    nullSafeCodeGen(ctx, ev, (ar, p) => {
       s"""
-         |Object $percentile = $pf.apply($ar);
+         |Object $percentile = $pf.apply($ar, $p);
          |if ($percentile != null) {
          |  ${ev.value} = $castCode;
          |} else {

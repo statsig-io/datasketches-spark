@@ -105,6 +105,25 @@ scala> df.where("Date between '2007-06-01' and '2010-01-01'").selectExpr("percen
 |  4|          4|       2.5|
 +---+-----------+----------+
 
+# Inspect the number of items stored in a sketch (N)
+>>> merged.selectExpr("approx_percentile_sketch_n(merged.sketch) AS n").show()
++---+
+|  n|
++---+
+|  4|
++---+
+
+# Use a percentage column (for example after joining a percentile table)
+>>> percentiles = spark.createDataFrame([(0.1,), (0.5,), (0.9,)], ["p"])
+>>> percentiles.crossJoin(merged).selectExpr("approx_percentile_estimate(merged.sketch, p) AS percentile").show()
++----------+
+|percentile|
++----------+
+|       1.0|
+|       2.5|
+|       3.0|
++----------+
+
 # Estimate rank directly from data
 >>> df.selectExpr("approx_rank_ex(Global_active_power, 3.0) AS rank").show()
 +----+
