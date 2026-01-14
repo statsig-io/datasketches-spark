@@ -783,6 +783,62 @@ case class QuantileFromSketchState(
 
 @ExpressionDescription(
   usage = """
+    _FUNC_(col) - Returns the total number of items `n` stored in a percentile sketch state.
+      The input state should be the one that the percentile sketch algorithm specified
+      by `spark.sql.dataSketches.quantiles.defaultImpl` generates.
+  """,
+  since = "3.1.2")
+case class SketchNFromState(
+    child: Expression,
+    implName: String)
+  extends UnaryExpression with ExpectsInputTypes with NullIntolerant with Logging {
+
+  def this(child: Expression) = {
+    this(child, SQLConf.get.quantileSketchImpl)
+  }
+
+  override def prettyName: String = "approx_percentile_sketch_n"
+
+  override def inputTypes: Seq[AbstractDataType] = Seq(BinaryType)
+
+  // Returns null for empty inputs or invalid bytes
+  override def nullable: Boolean = true
+
+  override def dataType: DataType = LongType
+
+  @transient private[this] lazy val getSketchN = {
+    (ar: Any) => try {
+      QuantileSketch(implName, ar.asInstanceOf[Array[Byte]]).getN
+    } catch {
+      case NonFatal(_) =>
+        logWarning("Illegal input bytes found, so cannot update " +
+          s"an immediate $implName sketch data.")
+        null
+    }
+  }
+
+  override protected def nullSafeEval(ar: Any): Any = getSketchN(ar)
+
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    val nf = ctx.addReferenceObj("getSketchN", getSketchN, classOf[Any => Any].getCanonicalName)
+    val n = ctx.freshName("n")
+    nullSafeCodeGen(ctx, ev, ar => {
+      s"""
+         |Object $n = $nf.apply($ar);
+         |if ($n != null) {
+         |  ${ev.value} = ((Long) $n).longValue();
+         |} else {
+         |  ${ev.isNull} = true;
+         |}
+       """.stripMargin
+    })
+  }
+
+  override protected def withNewChildInternal(newChild: Expression): Expression = copy(child = newChild)
+}
+
+@ExpressionDescription(
+  usage = """
     _FUNC_(col, value) - Returns the approximate rank in [0.0, 1.0] of `value` within the numeric
       column `col`. The second parameter must be a constant numeric literal. The internal sketch
       algorithm can be configured via `spark.sql.dataSketches.quantiles.defaultImpl`.

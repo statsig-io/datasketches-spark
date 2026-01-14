@@ -39,6 +39,7 @@ object DataSketches {
     expression[CombineQuantileSketches]("approx_percentile_combine"),
     expression[MergeQuantileSketches]("approx_percentile_merge"),
     expression[QuantileFromSketchState]("approx_percentile_estimate"),
+    expression[SketchNFromState]("approx_percentile_sketch_n"),
     expression[PmfFromSketchState]("approx_pmf_estimate"),
     expression[RankFromData]("approx_rank_ex"),
     expression[RankFromSketchState]("approx_rank_estimate"),

@@ -113,6 +113,7 @@ scala> df.where("Date between '2007-06-01' and '2010-01-01'").selectExpr("percen
 |  4|
 +---+
 
+
 # Use a percentage column (for example after joining a percentile table)
 >>> percentiles = spark.createDataFrame([(0.1,), (0.5,), (0.9,)], ["p"])
 >>> percentiles.crossJoin(merged).selectExpr("approx_percentile_estimate(merged.sketch, p) AS percentile").show()
@@ -123,6 +124,7 @@ scala> df.where("Date between '2007-06-01' and '2010-01-01'").selectExpr("percen
 |       2.5|
 |       3.0|
 +----------+
+
 
 # Estimate rank directly from data
 >>> df.selectExpr("approx_rank_ex(Global_active_power, 3.0) AS rank").show()
@@ -150,12 +152,12 @@ scala> df.where("Date between '2007-06-01' and '2010-01-01'").selectExpr("percen
 
 ### Configurations
 
-| Property Name | Default | Meaning |
-| ---- | ---- | ---- |
-| spark.sql.dataSketches.quantiles.sketchImpl | REQ | A sketch implementation used in quantile estimation functions. |
-| spark.sql.dataSketches.quantiles.kll.k | 200 | Specifies the parameter `k` for the quantile sketch implementation named `KLL`, `KllFloatsSketch`. |
-| spark.sql.dataSketches.quantiles.req.k | 12 | Specifies the parameter `k` for the quantile sketch implementation named `REQ`, `ReqSketch`. |
-| spark.sql.dataSketches.quantiles.mergeable.k | 128 | Specifies the parameter `k` for the quantile sketch implementation named `MERGEABLE`, `DoubleSketch`. |
+| Property Name                                | Default | Meaning                                                                                               |
+| -------------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------- |
+| spark.sql.dataSketches.quantiles.sketchImpl  | REQ     | A sketch implementation used in quantile estimation functions.                                        |
+| spark.sql.dataSketches.quantiles.kll.k       | 200     | Specifies the parameter `k` for the quantile sketch implementation named `KLL`, `KllFloatsSketch`.    |
+| spark.sql.dataSketches.quantiles.req.k       | 12      | Specifies the parameter `k` for the quantile sketch implementation named `REQ`, `ReqSketch`.          |
+| spark.sql.dataSketches.quantiles.mergeable.k | 128     | Specifies the parameter `k` for the quantile sketch implementation named `MERGEABLE`, `DoubleSketch`. |
 
 ## Frequent Item Sketches
 
@@ -270,9 +272,9 @@ only showing top 10 rows
 
 ### Configurations
 
-| Property Name | Default | Meaning |
-| ---- | ---- | ---- |
-| spark.sql.dataSketches.freqItems.maxMapSize | 1024 | Specifies the physical size of the internal hash map managed by this sketch and must be a power of 2. The maximum capacity of this internal hash map is 0.75 times * maxMapSize. Both the ultimate accuracy and size of this sketch are functions of maxMapSize. |
+| Property Name                               | Default | Meaning                                                                                                                                                                                                                                                           |
+| ------------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| spark.sql.dataSketches.freqItems.maxMapSize | 1024    | Specifies the physical size of the internal hash map managed by this sketch and must be a power of 2. The maximum capacity of this internal hash map is 0.75 times \* maxMapSize. Both the ultimate accuracy and size of this sketch are functions of maxMapSize. |
 
 ## Distinct Count Sketches
 
@@ -351,15 +353,15 @@ you can use similar functions to the other two sketch ones:
 
 ### Configurations
 
-| Property Name | Default | Meaning |
-| ---- | ---- | ---- |
-| spark.sql.dataSketches.distinctCnt.sketchImpl | CPC | A sketch implementation used in distinct count estimation functions. |
-| spark.sql.dataSketches.distinctCnt.cpc.lgK | 11 | Specifies the parameter `lgK` for the distinct count sketch implementation named `CPC`, `CpcSketch`. |
-| spark.sql.dataSketches.distinctCnt.hll.lgK | 12 | Specifies the parameter `lgK` for the distinct count sketch implementation named `HLL`, `HllSketch`. |
+| Property Name                                 | Default | Meaning                                                                                              |
+| --------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------- |
+| spark.sql.dataSketches.distinctCnt.sketchImpl | CPC     | A sketch implementation used in distinct count estimation functions.                                 |
+| spark.sql.dataSketches.distinctCnt.cpc.lgK    | 11      | Specifies the parameter `lgK` for the distinct count sketch implementation named `CPC`, `CpcSketch`. |
+| spark.sql.dataSketches.distinctCnt.hll.lgK    | 12      | Specifies the parameter `lgK` for the distinct count sketch implementation named `HLL`, `HllSketch`. |
 
 ## TODO
 
- - Checks performance differences between the built-in funtion and DataSketches ones.
+- Checks performance differences between the built-in funtion and DataSketches ones.
 
 ## Bug reports
 
