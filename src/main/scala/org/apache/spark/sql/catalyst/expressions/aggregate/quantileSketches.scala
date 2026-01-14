@@ -165,16 +165,12 @@ trait BasePercentileEstimation extends ImplicitCastInputTypes {
   protected lazy val returnPercentileArray = percentageExpression.dataType.isInstanceOf[ArrayType]
 
   @transient
-  private lazy val literalPercentages: Option[Array[Double]] = {
+  protected lazy val constPercentages: Array[Double] =
     if (percentageExpression.foldable) {
-      Option(percentageExpression.eval()).map(extractPercentages)
+      Option(percentageExpression.eval()).map(extractPercentages).orNull
     } else {
-      None
+      null
     }
-  }
-
-  @transient
-  protected lazy val constPercentages: Array[Double] = literalPercentages.orNull
 
   protected def extractPercentages(input: Any): Array[Double] = input match {
     case null => null
@@ -218,19 +214,20 @@ trait BasePercentileEstimation extends ImplicitCastInputTypes {
     val defaultCheck = super.checkInputDataTypes()
     if (defaultCheck.isFailure) return defaultCheck
 
-    literalPercentages match {
-      case Some(null) =>
-        TypeCheckFailure("Percentage value must not be null")
-      case Some(ps) if hasOutOfRangePercentage(ps) =>
-        TypeCheckFailure("Percentage(s) must be between 0.0 and 1.0, " +
-          s"but got $percentageExpression")
-      case Some(_) =>
+    if (!percentageExpression.foldable) {
+      if (allowNonFoldablePercentage) {
         TypeCheckSuccess
-      case None if allowNonFoldablePercentage =>
-        TypeCheckSuccess
-      case None =>
+      } else {
         TypeCheckFailure("The percentage(s) must be a constant literal, " +
           s"but got $percentageExpression")
+      }
+    } else if (constPercentages == null) {
+      TypeCheckFailure("Percentage value must not be null")
+    } else if (hasOutOfRangePercentage(constPercentages)) {
+      TypeCheckFailure("Percentage(s) must be between 0.0 and 1.0, " +
+        s"but got $percentageExpression")
+    } else {
+      TypeCheckSuccess
     }
   }
 
