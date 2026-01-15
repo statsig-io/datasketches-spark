@@ -188,6 +188,28 @@ class ApproximateQuerySuite extends QueryTest with SharedSparkSession with SQLTe
     checkAnswer(nullDf, Row(null))
   }
 
+  test("approx_percentile_estimate supports percentage column") {
+    import testImplicits._
+
+    val sketch = spark.sql(
+
+      """
+        |SELECT approx_percentile_accumulate(v) AS s
+        |  FROM VALUES (1.0), (2.0), (3.0), (4.0) AS t(v)
+      """.stripMargin)
+
+    val percentages = Seq(0.0, 0.5, 1.0).toDF("p")
+    val arrayPercentages = Seq(Seq(0.0, 1.0)).toDF("p")
+
+    val scalarResult = sketch.crossJoin(percentages)
+      .selectExpr("approx_percentile_estimate(s, p) AS percentile")
+    checkAnswer(scalarResult, Seq(Row(1.0), Row(2.5), Row(4.0)))
+
+    val arrayResult = sketch.crossJoin(arrayPercentages)
+      .selectExpr("approx_percentile_estimate(s, p) AS percentiles")
+    checkAnswer(arrayResult, Row(Array(1.0, 4.0)))
+  }
+
   test("approx_percentile_estimate - error handling") {
     val errMsg1 = intercept[AnalysisException] {
       spark.sql(
